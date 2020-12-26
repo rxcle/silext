@@ -1,3 +1,4 @@
+#include <iostream>
 #include <tchar.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,8 +8,32 @@
 #include <msiquery.h>
 #include <exception>
 #include <fstream>
+#include <vector>
 
 #pragma comment(lib, "msi.lib")
+/*
+STEPS:
+1: Extract EXE using Z-7ip (ALT: research via stream?)
+	RESULT: 
+	- Silverlight.7z
+	- silverlight.msi
+2: Extract Silverlight.7z
+	RESULT:
+	- Silverlight.msp
+3: Extract streams from Silverlight.msp
+	RESULT:
+	- #oldTocurrent.mst
+	- oldTocurrent.mst
+	- PCW_CAB_Silver.cab
+4: Extract PCW_CAB_Silver.cab
+	RESULT: Uncompressed files with mangled names
+5: Apply oldTocurrent.mst transform to silverlight.msi from step 1 (in memory)
+6: Read File and Directory tables
+7: Create directory structure using Directory table info
+8: Copy and rename files from result 4 to location with info from 6 and 7
+DONE
+*/
+
 
 // "C:\Temp\sl5\silverlight.msp" /out "C:\Temp\sl5\out"
 
@@ -34,6 +59,56 @@ LPTSTR MakePathForData(LPTSTR pszDest, size_t cchDest, LPCTSTR pszDir, LPCTSTR p
 	LPCVOID pBuffer, size_t cbBuffer);
 UINT GetString(MSIHANDLE hRecord, UINT iField, LPTSTR* ppszProperty, DWORD* pcchProperty);
 
+struct DirInfo
+{
+	std::wstring Key;
+	std::wstring ParentKey;
+	std::wstring Name;
+};
+
+void get_directories(PMSIHANDLE& const hDatabase, std::vector<DirInfo>& const directories)
+{
+	PMSIHANDLE hView;
+	PMSIHANDLE hRecord;
+	int dwError;
+
+	dwError = MsiDatabaseOpenView(hDatabase, L"SELECT Directory, Directory_Parent, DefaultDir FROM Directory", &hView);
+	if (ERROR_SUCCESS == dwError)
+	{
+		dwError = MsiViewExecute(hView, NULL);
+		if (ERROR_SUCCESS == dwError)
+		{
+			while (ERROR_SUCCESS == (dwError = MsiViewFetch(hView, &hRecord)))
+			{
+				DirInfo dirInfo;
+
+				LPTSTR pszName = NULL;
+				DWORD cchName = 0;
+
+				if (ERROR_SUCCESS == GetString(hRecord, 1, &pszName, &cchName))
+				{
+					dirInfo.Key = pszName;
+				}
+				delete[] pszName;
+
+				if (ERROR_SUCCESS == GetString(hRecord, 2, &pszName, &cchName))
+				{
+					dirInfo.ParentKey = pszName;
+				}
+				delete[] pszName;
+
+				if (ERROR_SUCCESS == GetString(hRecord, 3, &pszName, &cchName))
+				{
+					dirInfo.Name = pszName;
+				}
+				delete[] pszName;
+
+				directories.push_back(dirInfo);
+			}
+		}
+	}
+}
+
 // Entry point.
 int _tmain(int argc, _TCHAR* argv[])
 {
@@ -42,7 +117,7 @@ int _tmain(int argc, _TCHAR* argv[])
 	ARGS args = { 0 };
 	IStorage* pRootStorage = NULL;
 	IEnumSTATSTG* pEnum = NULL;
-	LPCTSTR pszPersist = MSIDBOPEN_READONLY;// + MSIDBOPEN_PATCHFILE;
+	LPCTSTR pszPersist = MSIDBOPEN_READONLY;// +MSIDBOPEN_PATCHFILE;
 	STATSTG stg = { 0 };
 	PMSIHANDLE hDatabase = NULL;
 	PMSIHANDLE hView = NULL;
@@ -100,8 +175,20 @@ int _tmain(int argc, _TCHAR* argv[])
 	dwError = MsiOpenDatabase(args.Path, pszPersist, &hDatabase);
 	if (ERROR_SUCCESS == dwError)
 	{
+		int tresult = MsiDatabaseApplyTransform(hDatabase, L"C:\\Temp\\sl5\\oldTocurrent.mst", 0);
+		//int cresult = MsiDatabaseCommit(hDatabase);
+
+		std::vector<DirInfo> directories;
+
+		get_directories(hDatabase, directories);
+
+		for (DirInfo &d : directories)
+		{
+			std::wcout << d.Key << L"\t" << d.ParentKey << L"\t" << d.Name << std::endl;
+		}
+
 		dwError = MsiDatabaseOpenView(hDatabase,
-			TEXT("SELECT `Name` FROM `_Storages`"), &hView);
+			TEXT("SELECT FileName, Directory_ FROM File, Component WHERE File.Component_ = Component.Component"), &hView);
 		if (ERROR_SUCCESS == dwError)
 		{
 			dwError = MsiViewExecute(hView, NULL);
@@ -116,9 +203,19 @@ int _tmain(int argc, _TCHAR* argv[])
 					// Get the name of the stream but skip if \005SummaryInformation stream.
 					if (ERROR_SUCCESS == GetString(hRecord, 1, &pszName, &cchName))
 					{
-						int x = 0;
+						std::wcout << pszName << std::endl;
 					}
 					delete[] pszName;
+
+					LPTSTR pszDirName = NULL;
+
+					// Get the name of the stream but skip if \005SummaryInformation stream.
+					if (ERROR_SUCCESS == GetString(hRecord, 2, &pszDirName, &cchName))
+					{
+						std::wcout << pszDirName << std::endl;
+					}
+					delete[] pszDirName;
+
 
 					//dwError = SaveStream(hRecord, args.Directory);
 					//if (ERROR_SUCCESS != dwError)
