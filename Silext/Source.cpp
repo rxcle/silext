@@ -14,7 +14,7 @@
 /*
 STEPS:
 1: Extract EXE using Z-7ip (ALT: research via stream?)
-	RESULT: 
+	RESULT:
 	- Silverlight.7z
 	- silverlight.msi
 2: Extract Silverlight.7z
@@ -54,10 +54,10 @@ HRESULT SaveStorage(IStorage* pRootStorage, LPCTSTR pszDir, PCWSTR pszName, LPCT
 UINT SaveStream(MSIHANDLE hRecord, LPCTSTR pszDir);
 void win32_error(DWORD dwError);
 void error(LPCTSTR pszFormat, ...);
-void usage(LPCTSTR pszPath, FILE* out);
 LPTSTR MakePathForData(LPTSTR pszDest, size_t cchDest, LPCTSTR pszDir, LPCTSTR pszName,
 	LPCVOID pBuffer, size_t cbBuffer);
 UINT GetString(MSIHANDLE hRecord, UINT iField, LPTSTR* ppszProperty, DWORD* pcchProperty);
+std::wstring GetString(MSIHANDLE hRecord, UINT iField);
 
 struct DirInfo
 {
@@ -66,47 +66,38 @@ struct DirInfo
 	std::wstring Name;
 };
 
+struct FileInfo
+{
+	std::wstring Key;
+	std::wstring FileName;
+	std::wstring DirectoryKey;
+};
+
+
 void get_directories(PMSIHANDLE& hDatabase, std::vector<DirInfo>& directories)
 {
-	PMSIHANDLE hView;
-	PMSIHANDLE hRecord;
-	int dwError;
+	PMSIHANDLE hView, hRecord;
+	if (MsiDatabaseOpenView(hDatabase, L"SELECT Directory, Directory_Parent, DefaultDir FROM Directory", &hView) == ERROR_SUCCESS)
+		if (MsiViewExecute(hView, NULL) == ERROR_SUCCESS)
+			while (MsiViewFetch(hView, &hRecord) == ERROR_SUCCESS)
+				directories.push_back({
+					GetString(hRecord, 1),
+					GetString(hRecord, 2),
+					GetString(hRecord, 3)
+					});
+}
 
-	dwError = MsiDatabaseOpenView(hDatabase, L"SELECT Directory, Directory_Parent, DefaultDir FROM Directory", &hView);
-	if (ERROR_SUCCESS == dwError)
-	{
-		dwError = MsiViewExecute(hView, NULL);
-		if (ERROR_SUCCESS == dwError)
-		{
-			while (ERROR_SUCCESS == (dwError = MsiViewFetch(hView, &hRecord)))
-			{
-				DirInfo dirInfo;
-
-				LPTSTR pszName = NULL;
-				DWORD cchName = 0;
-
-				if (ERROR_SUCCESS == GetString(hRecord, 1, &pszName, &cchName))
-				{
-					dirInfo.Key = pszName;
-				}
-				delete[] pszName;
-
-				if (ERROR_SUCCESS == GetString(hRecord, 2, &pszName, &cchName))
-				{
-					dirInfo.ParentKey = pszName;
-				}
-				delete[] pszName;
-
-				if (ERROR_SUCCESS == GetString(hRecord, 3, &pszName, &cchName))
-				{
-					dirInfo.Name = pszName;
-				}
-				delete[] pszName;
-
-				directories.push_back(dirInfo);
-			}
-		}
-	}
+void get_files(PMSIHANDLE& hDatabase, std::vector<FileInfo>& files)
+{
+	PMSIHANDLE hView, hRecord;
+	if (MsiDatabaseOpenView(hDatabase, L"SELECT File, FileName, Directory_ FROM File, Component WHERE File.Component_ = Component.Component", &hView) == ERROR_SUCCESS)
+		if (MsiViewExecute(hView, NULL) == ERROR_SUCCESS)
+			while (MsiViewFetch(hView, &hRecord) == ERROR_SUCCESS)
+				files.push_back({
+					GetString(hRecord, 1),
+					GetString(hRecord, 2),
+					GetString(hRecord, 3)
+					});
 }
 
 // Entry point.
@@ -123,24 +114,27 @@ int _tmain(int argc, _TCHAR* argv[])
 	PMSIHANDLE hView = NULL;
 	PMSIHANDLE hRecord = NULL;
 
-	dwError = ParseArguments(argc, argv, &args);
-	if (ERROR_SUCCESS != dwError)
-	{
-		return dwError;
-	}
+	//dwError = ParseArguments(argc, argv, &args);
+	//if (ERROR_SUCCESS != dwError)
+	//{
+	//	return dwError;
+	//}
+
+	LPCWSTR mspName = L"C:\\Temp\\sl5\\silverlight.msp";
+	LPCWSTR workDir = L"C:\\Temp\\sl5\\work";
 
 	//// Open the root storage file and extract storages first. Storages cannot
 	//// be extracted using MSI APIs so we must use the compound file implementation
 	//// for IStorage.
-	//hr = StgOpenStorage(
-	//	args.Path,
-	//	NULL,
-	//	STGM_READ | STGM_SHARE_EXCLUSIVE,
-	//	NULL,
-	//	0,
-	//	&pRootStorage);
-	//if (SUCCEEDED(hr) && pRootStorage)
-	//{
+	hr = StgOpenStorage(
+		mspName,
+		NULL,
+		STGM_READ | STGM_SHARE_EXCLUSIVE,
+		NULL,
+		0,
+		&pRootStorage);
+	if (SUCCEEDED(hr) && pRootStorage)
+	{
 	//	// Determine if the file path specifies an MSP file.
 	//	// This will be used later to open the database with MSI APIs.
 	//	if (IsPatch(pRootStorage))
@@ -148,31 +142,39 @@ int _tmain(int argc, _TCHAR* argv[])
 	//		pszPersist = MSIDBOPEN_READONLY + MSIDBOPEN_PATCHFILE;
 	//	}
 
-	//	hr = pRootStorage->EnumElements(0, NULL, 0, &pEnum);
-	//	if (SUCCEEDED(hr))
-	//	{
-	//		while (S_OK == (hr = pEnum->Next(1, &stg, NULL)))
-	//		{
-	//			if (STGTY_STORAGE == stg.type)
-	//			{
-	//				hr = SaveStorage(pRootStorage, args.Directory, stg.pwcsName, TEXT(".mst"));
-	//				if (FAILED(hr))
-	//				{
-	//					break;
-	//				}
-	//			}
-	//		}
-	//		SAFE_RELEASE(pEnum);
-	//	}
-	//}
-	//SAFE_RELEASE(pRootStorage);
+		hr = pRootStorage->EnumElements(0, NULL, 0, &pEnum);
+		if (SUCCEEDED(hr))
+		{
+			while (S_OK == (hr = pEnum->Next(1, &stg, NULL)))
+			{
+				if (STGTY_STORAGE == stg.type)
+				{
+					hr = SaveStorage(pRootStorage, workDir, stg.pwcsName, TEXT(".mst"));
+					if (FAILED(hr))
+					{
+						break;
+					}
+				}
+				else if (STGTY_STREAM == stg.type)
+				{
+					// TODO: Save stream
+				}
+			}
+			SAFE_RELEASE(pEnum);
+		}
+	}
+	SAFE_RELEASE(pRootStorage);
+
 
 	// Now open the database using MSI APIs. Patches cannot be opened simultaneously
 	// since exclusive access is required and no MSI APIs are exported that accept
 	// an IStorage pointer.
 	//if (SUCCEEDED(hr))
 	//{
-	dwError = MsiOpenDatabase(args.Path, pszPersist, &hDatabase);
+
+	LPCWSTR dbName = L"C:\\Temp\\sl5\\silverlight.msi";
+
+	dwError = MsiOpenDatabase(dbName, pszPersist, &hDatabase);
 	if (ERROR_SUCCESS == dwError)
 	{
 		int tresult = MsiDatabaseApplyTransform(hDatabase, L"C:\\Temp\\sl5\\oldTocurrent.mst", 0);
@@ -182,54 +184,18 @@ int _tmain(int argc, _TCHAR* argv[])
 
 		get_directories(hDatabase, directories);
 
-		for (DirInfo &d : directories)
+		for (DirInfo& d : directories)
 		{
 			std::wcout << d.Key << L"\t" << d.ParentKey << L"\t" << d.Name << std::endl;
 		}
 
-		dwError = MsiDatabaseOpenView(hDatabase,
-			TEXT("SELECT FileName, Directory_ FROM File, Component WHERE File.Component_ = Component.Component"), &hView);
-		if (ERROR_SUCCESS == dwError)
+		std::vector<FileInfo> files;
+
+		get_files(hDatabase, files);
+
+		for (FileInfo& f : files)
 		{
-			dwError = MsiViewExecute(hView, NULL);
-			if (ERROR_SUCCESS == dwError)
-			{
-				while (ERROR_SUCCESS == (dwError = MsiViewFetch(hView, &hRecord)))
-				{
-					LPTSTR pszName = NULL;
-					DWORD cchName = 0;
-					std::ofstream file;
-
-					// Get the name of the stream but skip if \005SummaryInformation stream.
-					if (ERROR_SUCCESS == GetString(hRecord, 1, &pszName, &cchName))
-					{
-						std::wcout << pszName << std::endl;
-					}
-					delete[] pszName;
-
-					LPTSTR pszDirName = NULL;
-
-					// Get the name of the stream but skip if \005SummaryInformation stream.
-					if (ERROR_SUCCESS == GetString(hRecord, 2, &pszDirName, &cchName))
-					{
-						std::wcout << pszDirName << std::endl;
-					}
-					delete[] pszDirName;
-
-
-					//dwError = SaveStream(hRecord, args.Directory);
-					//if (ERROR_SUCCESS != dwError)
-					//{
-					//	break;
-					//}
-				}
-
-				// If there are no more records indicate success.
-				if (ERROR_NO_MORE_ITEMS == dwError)
-				{
-					dwError = ERROR_SUCCESS;
-				}
-			}
+			std::wcout << f.Key << L"\t" << f.FileName << L"\t" << f.DirectoryKey << std::endl;
 		}
 
 		//dwError = MsiDatabaseOpenView(hDatabase,
@@ -291,21 +257,18 @@ DWORD ParseArguments(int argc, _TCHAR* argv[], LPARGS args)
 	if (2 > argc)
 	{
 		error(TEXT("Error: you must specify a Windows Installer file from which to extract files.\n"));
-		usage(argv[0], stderr);
 		return ERROR_INVALID_PARAMETER;
 	}
 
 	if (0 == _tcsicmp(TEXT("/?"), argv[iParamIndex]) || 0 == _tcsicmp(TEXT("-?"), argv[iParamIndex]))
 	{
 		// Display the usage text.
-		usage(argv[0], stdout);
 		return ERROR_SUCCESS;
 	}
 	else if (TEXT('/') == argv[iParamIndex][0] || TEXT('-') == argv[iParamIndex][0])
 	{
 		// Filename should not begin with a command-switch character.
 		error(TEXT("Error: invalid file name.\n"));
-		usage(argv[0], stderr);
 		return ERROR_INVALID_PARAMETER;
 	}
 	else
@@ -327,44 +290,17 @@ DWORD ParseArguments(int argc, _TCHAR* argv[], LPARGS args)
 			else
 			{
 				error(TEXT("Error: you must specify an output directory with /out.\n"));
-				usage(argv[0], stderr);
 				return ERROR_INVALID_PARAMETER;
 			}
 		}
 		else
 		{
 			error(TEXT("Error: unknown option: %s.\n"), argv[iParamIndex]);
-			usage(argv[0], stderr);
 			return ERROR_INVALID_PARAMETER;
 		}
 	}
 
 	return ERROR_SUCCESS;
-}
-
-// Prints usage to the given output file stream.
-void usage(LPCTSTR pszPath, FILE* out)
-{
-	_ASSERTE(pszPath);
-	_ASSERTE(out);
-
-	LPTSTR pszName = NULL;
-	pszName = (LPTSTR)_tcsrchr(pszPath, TEXT('\\'));
-	if (pszName)
-	{
-		// Advance past the backslash.
-		pszName++;
-	}
-	else
-	{
-		// Set the executable name.
-		pszName = const_cast<LPTSTR>(pszPath);
-	}
-
-	_ftprintf(out, TEXT("Usage: %s <file> [/out <output>] [/ext]\n\n"), pszName);
-	_ftprintf(out, TEXT("\tfile - Path to an MSI, MSM, MSP, or PCP file.\n"));
-	_ftprintf(out, TEXT("\tout  - Extract streams and storages to the <output> directory.\n"));
-	_ftprintf(out, TEXT("\nExtracts transforms and cabinets from a Windows Installer file.\n"));
 }
 
 // Colors errors on the console red and prints the formatted error.
@@ -502,6 +438,24 @@ UINT GetString(MSIHANDLE hRecord, UINT iField, LPTSTR* ppszProperty, DWORD* pcch
 
 	return iErr;
 }
+
+// Wrapper around allocating and filling a buffer using MsiRecordGetString().
+std::wstring GetString(MSIHANDLE hRecord, UINT iField)
+{
+	const int MaxLength = 255;
+	DWORD cchProperty = 0;
+	WCHAR szValueBuf[MaxLength] = L"";
+
+	if (MsiRecordGetString(hRecord, iField, szValueBuf, &cchProperty) == ERROR_MORE_DATA)
+	{
+		cchProperty++;
+		if (cchProperty > MaxLength) cchProperty = MaxLength;
+		MsiRecordGetString(hRecord, iField, szValueBuf, &cchProperty);
+	}
+
+	return std::wstring(szValueBuf, cchProperty);
+}
+
 
 // Determines if the given IStorage* is for a patch
 // using the STATSTG for the IStorage object.
