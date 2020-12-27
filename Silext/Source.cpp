@@ -66,7 +66,7 @@ struct DirInfo
 	std::wstring Name;
 };
 
-void get_directories(PMSIHANDLE& const hDatabase, std::vector<DirInfo>& const directories)
+void get_directories(PMSIHANDLE& hDatabase, std::vector<DirInfo>& directories)
 {
 	PMSIHANDLE hView;
 	PMSIHANDLE hRecord;
