@@ -10,10 +10,13 @@
 #include <functional>
 #include <shlwapi.h>
 #include <algorithm>
+#include <map>
+#include <bitextractor.hpp>
 
 #pragma comment(lib, "msi.lib")
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "Shlwapi.lib")
+#pragma comment(lib, "bit7z64.lib")
 /*
 STEPS:
 1: Extract EXE using Z-7ip (ALT: research via stream?)
@@ -44,6 +47,7 @@ struct DirInfo
 	std::wstring Key;
 	std::wstring ParentKey;
 	std::wstring Name;
+	DirInfo* ParentDir;
 };
 
 struct FileInfo
@@ -347,26 +351,47 @@ std::vector<std::wstring> find_files(const std::wstring& basePath, const std::ws
 enum class ReturnCode
 {
 	Success = 0,
-	UnexpectedAmountOfMstFiles = 1,
-	UnexpectedAmountOfPayloadFiles = 2,
-	UnexpectedAmountOfCabFiles = 3
+	UnexpectedAmountOfMspFiles = 1,
+	UnexpectedAmountOfMstFiles = 2,
+	UnexpectedAmountOfPayloadFiles = 3,
+	UnexpectedAmountOfCabFiles = 4
 };
+
+void build_directory_paths(std::vector<DirInfo>& directories)
+{
+	for (auto& dir : directories)
+	{
+		for (auto& parDir : directories)
+			if (parDir.Key.compare(dir.Key) == 0)
+			{
+				dir.ParentDir = &parDir;
+				break;
+			}
+	}
+}
 
 // Entry point.
 int wmain(int argc, wchar_t* argv[])
 {
+	const std::wstring sevenZipName = L"C:\\Temp\\sl5\\silverlight.7z";
 	const std::wstring msiName = L"C:\\Temp\\sl5\\silverlight.msi";
-	const std::wstring mspName = L"C:\\Temp\\sl5\\silverlight.msp";
 	const std::wstring targetPath = L"C:\\Temp\\sl5\\work\\ext";
 	const std::wstring workDir = L"C:\\Temp\\sl5\\work";
 
-	// TODO: Extract silverlight.7z
+	bit7z::Bit7zLibrary blib(L"7zxa.dll");
+	bit7z::BitExtractor extractor(blib, bit7z::BitFormat::SevenZip);
+
+	extractor.extract(sevenZipName, workDir);
+
+	auto mspFiles = find_files(workDir, L"*.msp");
+	if (mspFiles.size() != 1)
+		return static_cast<int>(ReturnCode::UnexpectedAmountOfMspFiles);
+
+	extract_msp(mspFiles.front(), workDir);
 
 	auto cabFiles = find_files(workDir, L"*.cab");
 	if (cabFiles.size() != 1)
 		return static_cast<int>(ReturnCode::UnexpectedAmountOfCabFiles);
-
-	extract_msp(mspName, workDir);
 
 	auto mstFiles = find_files(workDir, L"oldToCurrent.mst");
 	if (mstFiles.size() != 1)
@@ -376,6 +401,8 @@ int wmain(int argc, wchar_t* argv[])
 	get_files_from_mst(msiName, mstFiles.front(), dbInfo);
 	if (dbInfo.Files.empty() || dbInfo.Directories.empty())
 		return static_cast<int>(ReturnCode::UnexpectedAmountOfPayloadFiles);
+
+	build_directory_paths(dbInfo.Directories);
 
 	// TODO: Construct directory structure
 	// TODO: Construct full paths for files

@@ -24,4 +24,7 @@
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\..\..\Downloads\7z1900-extra\x64\7zxa.dll" />
+  </ItemGroup>
 </Project>
