@@ -1,3 +1,5 @@
+/* Silext - A Silverlight installer extractor - Copyright (c) 2020 Rxcle */
+
 #include <iostream>
 #include <tchar.h>
 #include <crtdbg.h>
@@ -16,14 +18,14 @@
 #pragma comment(lib, "msi.lib")
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "Shlwapi.lib")
-#pragma comment(lib, "bit7z64.lib")
+
 /*
 STEPS:
-1: Extract EXE using Z-7ip (ALT: research via stream?)
+1: Extract EXE using Z-7ip
 	RESULT:
 	- Silverlight.7z
 	- silverlight.msi
-2: Extract Silverlight.7z
+2: Extract Silverlight.7z using 7-Zip
 	RESULT:
 	- Silverlight.msp
 3: Extract streams from Silverlight.msp
@@ -31,12 +33,12 @@ STEPS:
 	- #oldTocurrent.mst
 	- oldTocurrent.mst
 	- PCW_CAB_Silver.cab
-4: Extract PCW_CAB_Silver.cab
-	RESULT: Uncompressed files with mangled names
-5: Apply oldTocurrent.mst transform to silverlight.msi from step 1 (in memory)
-6: Read File and Directory tables
-7: Create directory structure using Directory table info
-8: Copy and rename files from result 4 to location with info from 6 and 7
+4: Apply "oldTocurrent.mst" transform to silverlight.msi from step 1 (in memory)
+5: Read File and Directory tables
+6: Create directory structure using Directory table info
+7: Reconstruct directory structure and file names
+8: Extract PCW_CAB_Silver.cab using CAB to names obtained from 6 and 7
+	RESULT: Uncompressed files in structure
 DONE
 */
 
@@ -137,7 +139,8 @@ void get_directories(PMSIHANDLE& hDatabase, std::vector<DirInfo>& directories)
 		directories.push_back({
 			get_record_string(hRecord, 1),
 			get_record_string(hRecord, 2),
-			get_record_string(hRecord, 3)
+			get_record_string(hRecord, 3),
+			nullptr
 			});
 	});
 }
@@ -348,15 +351,6 @@ std::vector<std::wstring> find_files(const std::wstring& basePath, const std::ws
 	return files;
 }
 
-enum class ReturnCode
-{
-	Success = 0,
-	UnexpectedAmountOfMspFiles = 1,
-	UnexpectedAmountOfMstFiles = 2,
-	UnexpectedAmountOfPayloadFiles = 3,
-	UnexpectedAmountOfCabFiles = 4
-};
-
 void build_directory_paths(std::vector<DirInfo>& directories)
 {
 	for (auto& dir : directories)
@@ -370,18 +364,39 @@ void build_directory_paths(std::vector<DirInfo>& directories)
 	}
 }
 
+enum class ReturnCode
+{
+	Success = 0,
+	InvalidArguments = 1,
+	UnexpectedAmountOfMsiFiles = 2,
+	UnexpectedAmountOf7zFiles = 3,
+	UnexpectedAmountOfMspFiles = 4,
+	UnexpectedAmountOfMstFiles = 5,
+	UnexpectedAmountOfPayloadFiles = 6,
+	UnexpectedAmountOfCabFiles = 7
+};
+
 // Entry point.
 int wmain(int argc, wchar_t* argv[])
 {
-	const std::wstring sevenZipName = L"C:\\Temp\\sl5\\silverlight.7z";
-	const std::wstring msiName = L"C:\\Temp\\sl5\\silverlight.msi";
+	const std::wstring setupExeName = L"C:\\Temp\\sl5\\Silverlight_x64.exe";
 	const std::wstring targetPath = L"C:\\Temp\\sl5\\work\\ext";
 	const std::wstring workDir = L"C:\\Temp\\sl5\\work";
 
-	bit7z::Bit7zLibrary blib(L"7zxa.dll");
-	bit7z::BitExtractor extractor(blib, bit7z::BitFormat::SevenZip);
+	bit7z::Bit7zLibrary blib;
+	bit7z::BitExtractor cextractor(blib, bit7z::BitFormat::Cab);
+	cextractor.extract(setupExeName, workDir);
 
-	extractor.extract(sevenZipName, workDir);
+	auto msiFiles = find_files(workDir, L"*.msi");
+	if (msiFiles.size() != 1)
+		return static_cast<int>(ReturnCode::UnexpectedAmountOfMsiFiles);
+
+	auto sevenZipFiles = find_files(workDir, L"*.7z");
+	if (sevenZipFiles.size() != 1)
+		return static_cast<int>(ReturnCode::UnexpectedAmountOf7zFiles);
+
+	bit7z::BitExtractor extractor(blib, bit7z::BitFormat::SevenZip);
+	extractor.extract(sevenZipFiles.front(), workDir);
 
 	auto mspFiles = find_files(workDir, L"*.msp");
 	if (mspFiles.size() != 1)
@@ -398,7 +413,7 @@ int wmain(int argc, wchar_t* argv[])
 		return static_cast<int>(ReturnCode::UnexpectedAmountOfMstFiles);
 
 	DbInfo dbInfo;
-	get_files_from_mst(msiName, mstFiles.front(), dbInfo);
+	get_files_from_mst(msiFiles.front(), mstFiles.front(), dbInfo);
 	if (dbInfo.Files.empty() || dbInfo.Directories.empty())
 		return static_cast<int>(ReturnCode::UnexpectedAmountOfPayloadFiles);
 

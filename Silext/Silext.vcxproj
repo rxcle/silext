@@ -91,9 +91,14 @@
     <ClInclude Include="Source.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="..\..\..\..\Downloads\7z1900-extra\x64\7zxa.dll">
+    <None Include="7z.dll">
       <DeploymentContent>true</DeploymentContent>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="7Zip-License.txt">
+      <DeploymentContent>true</DeploymentContent>
+    </Text>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

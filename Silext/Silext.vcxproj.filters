@@ -25,6 +25,9 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <None Include="..\..\..\..\Downloads\7z1900-extra\x64\7zxa.dll" />
+    <None Include="7z.dll" />
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="7Zip-License.txt" />
   </ItemGroup>
 </Project>
