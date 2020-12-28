@@ -4,11 +4,13 @@
 #include <windows.h>
 #include <objbase.h>
 #include <msiquery.h>
+#include <setupapi.h>
 #include <fstream>
 #include <vector>
 #include <functional>
 
 #pragma comment(lib, "msi.lib")
+#pragma comment(lib, "setupapi.lib")
 /*
 STEPS:
 1: Extract EXE using Z-7ip (ALT: research via stream?)
@@ -275,7 +277,7 @@ void extract_msp(const std::wstring& mspName, const std::wstring& workDir)
 	MsiCloseHandle(hDatabase);
 }
 
-void get_files_from_mst(const std::wstring& msiName, const std::wstring& mstName, DbInfo& const dbInfo)
+void get_files_from_mst(const std::wstring& msiName, const std::wstring& mstName, DbInfo& dbInfo)
 {
 	PMSIHANDLE hDatabase = NULL;
 	PMSIHANDLE hView = NULL;
@@ -289,6 +291,25 @@ void get_files_from_mst(const std::wstring& msiName, const std::wstring& mstName
 		get_directories(hDatabase, dbInfo.Directories);
 		get_files(hDatabase, dbInfo.Files);
 	}
+}
+
+void extract_cab(const std::wstring& cabName)
+{
+	SetupIterateCabinet(cabName.c_str(), 0,
+		[](PVOID context, UINT notification, UINT_PTR param1, UINT_PTR param2) -> UINT 
+		{
+			if (notification == SPFILENOTIFY_FILEINCABINET)
+			{
+				auto fileInCabinetInfo = (FILE_IN_CABINET_INFO*)param1;
+
+				// TODO: Set full path based on Directories/Files extracted from MST
+				fileInCabinetInfo->NameInCabinet = L"";
+
+				return FILEOP_DOIT;
+			}
+			return NO_ERROR;
+		},
+		(void*)&cabName);
 }
 
 // Entry point.
@@ -316,6 +337,15 @@ int wmain(int argc, wchar_t* argv[])
 	{
 		std::wcout << f.Key << L"\t" << f.FileName << L"\t" << f.DirectoryKey << std::endl;
 	}
+
+	// TODO: Construct directory structure
+	// TODO: Construct full paths for files
+
+	
+	// TODO: Get CAB filename(s) dynamically from workDir
+	const wchar_t* cabName = L"C:\\Temp\\sl5\\work\\PCW_CAB_Silver.cab";
+
+	extract_cab(cabName);
 
 	return 0;
 }
