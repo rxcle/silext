@@ -8,9 +8,11 @@
 #include <fstream>
 #include <vector>
 #include <functional>
+#include <shlwapi.h>
 
 #pragma comment(lib, "msi.lib")
 #pragma comment(lib, "setupapi.lib")
+#pragma comment(lib, "Shlwapi.lib")
 /*
 STEPS:
 1: Extract EXE using Z-7ip (ALT: research via stream?)
@@ -277,7 +279,7 @@ void extract_msp(const std::wstring& mspName, const std::wstring& workDir)
 	MsiCloseHandle(hDatabase);
 }
 
-void get_files_from_mst(const std::wstring& msiName, const std::wstring& mstName, DbInfo& dbInfo)
+void get_files_from_mst(const std::wstring& msiName, const std::wstring& mstName, DbInfo& dbInfo, const std::vector<std::wstring>& mstFiles)
 {
 	PMSIHANDLE hDatabase = NULL;
 	PMSIHANDLE hView = NULL;
@@ -286,14 +288,17 @@ void get_files_from_mst(const std::wstring& msiName, const std::wstring& mstName
 	UINT dwError = MsiOpenDatabase(msiName.c_str(), MSIDBOPEN_READONLY, &hDatabase);
 	if (ERROR_SUCCESS == dwError)
 	{
-		int tresult = MsiDatabaseApplyTransform(hDatabase, mstName.c_str(), 0);
+		for (auto mstFile : mstFiles)
+			MsiDatabaseApplyTransform(hDatabase, mstFile.c_str(), 0);
+
+		MsiDatabaseApplyTransform(hDatabase, mstName.c_str(), 0);
 
 		get_directories(hDatabase, dbInfo.Directories);
 		get_files(hDatabase, dbInfo.Files);
 	}
 }
 
-void extract_cab(const std::wstring& cabName)
+void extract_cab(const std::wstring& cabName, const std::wstring& targetPath)
 {
 	SetupIterateCabinet(cabName.c_str(), 0,
 		[](PVOID context, UINT notification, UINT_PTR param1, UINT_PTR param2) -> UINT 
@@ -303,13 +308,40 @@ void extract_cab(const std::wstring& cabName)
 				auto fileInCabinetInfo = (FILE_IN_CABINET_INFO*)param1;
 
 				// TODO: Set full path based on Directories/Files extracted from MST
-				fileInCabinetInfo->NameInCabinet = L"";
+				auto tpath = (std::wstring*)context;
+				PathCombine(fileInCabinetInfo->FullTargetName, tpath->c_str(), fileInCabinetInfo->NameInCabinet);
 
 				return FILEOP_DOIT;
 			}
 			return NO_ERROR;
 		},
-		(void*)&cabName);
+		(void*)&targetPath);
+}
+
+std::wstring ConcatPath(const std::wstring& firstPath, const std::wstring& secondPath)
+{
+	wchar_t combinedPath[MAX_PATH];
+	PathCombine(combinedPath, firstPath.c_str(), secondPath.c_str());
+	return combinedPath;
+}
+
+std::vector<std::wstring> find_files(const std::wstring& path)
+{
+	std::vector<std::wstring> files;
+
+	WIN32_FIND_DATA findData = { 0 };
+	HANDLE hFind = FindFirstFile(path.c_str(), &findData);
+	if (INVALID_HANDLE_VALUE != hFind)
+	{
+		do
+		{
+			if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+				files.push_back(findData.cFileName);
+		} while (FindNextFile(hFind, &findData) == TRUE);
+
+		FindClose(hFind);
+	}
+	return files;
 }
 
 // Entry point.
@@ -321,12 +353,18 @@ int wmain(int argc, wchar_t* argv[])
 
 	extract_msp(mspName, workDir);
 
+	auto mstFiles = find_files(L"C:\\Temp\\sl5\\work\\*.mst");
+	for (auto f : mstFiles)
+	{
+		std::wcout << f << std::endl;
+	}
+
 	// TODO: Get MST filename(s) dynamically from workDir
 	const wchar_t* mstName = L"C:\\Temp\\sl5\\work\\oldTocurrent.mst";
 
 
 	DbInfo dbInfo;
-	get_files_from_mst(msiName, mstName, dbInfo);
+	get_files_from_mst(msiName, mstName, dbInfo, mstFiles);
 
 	for (DirInfo& d : dbInfo.Directories)
 	{
@@ -344,8 +382,9 @@ int wmain(int argc, wchar_t* argv[])
 	
 	// TODO: Get CAB filename(s) dynamically from workDir
 	const wchar_t* cabName = L"C:\\Temp\\sl5\\work\\PCW_CAB_Silver.cab";
+	const wchar_t* targetPath = L"C:\\Temp\\sl5\\work\\ext";
 
-	extract_cab(cabName);
+	extract_cab(cabName, targetPath);
 
 	return 0;
 }
