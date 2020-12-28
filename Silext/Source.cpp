@@ -9,6 +9,7 @@
 #include <vector>
 #include <functional>
 #include <shlwapi.h>
+#include <algorithm>
 
 #pragma comment(lib, "msi.lib")
 #pragma comment(lib, "setupapi.lib")
@@ -279,7 +280,7 @@ void extract_msp(const std::wstring& mspName, const std::wstring& workDir)
 	MsiCloseHandle(hDatabase);
 }
 
-void get_files_from_mst(const std::wstring& msiName, const std::wstring& mstName, DbInfo& dbInfo, const std::vector<std::wstring>& mstFiles)
+void get_files_from_mst(const std::wstring& msiName, const std::wstring& mstFile, DbInfo& dbInfo)
 {
 	PMSIHANDLE hDatabase = NULL;
 	PMSIHANDLE hView = NULL;
@@ -288,10 +289,7 @@ void get_files_from_mst(const std::wstring& msiName, const std::wstring& mstName
 	UINT dwError = MsiOpenDatabase(msiName.c_str(), MSIDBOPEN_READONLY, &hDatabase);
 	if (ERROR_SUCCESS == dwError)
 	{
-		for (auto mstFile : mstFiles)
-			MsiDatabaseApplyTransform(hDatabase, mstFile.c_str(), 0);
-
-		MsiDatabaseApplyTransform(hDatabase, mstName.c_str(), 0);
+		MsiDatabaseApplyTransform(hDatabase, mstFile.c_str(), 0);
 
 		get_directories(hDatabase, dbInfo.Directories);
 		get_files(hDatabase, dbInfo.Files);
@@ -318,25 +316,27 @@ void extract_cab(const std::wstring& cabName, const std::wstring& targetPath)
 		(void*)&targetPath);
 }
 
-std::wstring ConcatPath(const std::wstring& firstPath, const std::wstring& secondPath)
+std::wstring concat_path(const std::wstring& firstPath, const std::wstring& secondPath)
 {
 	wchar_t combinedPath[MAX_PATH];
 	PathCombine(combinedPath, firstPath.c_str(), secondPath.c_str());
 	return combinedPath;
 }
 
-std::vector<std::wstring> find_files(const std::wstring& path)
+std::vector<std::wstring> find_files(const std::wstring& basePath, const std::wstring& filter)
 {
 	std::vector<std::wstring> files;
 
+	std::wstring fullPath = concat_path(basePath, filter);
+
 	WIN32_FIND_DATA findData = { 0 };
-	HANDLE hFind = FindFirstFile(path.c_str(), &findData);
+	HANDLE hFind = FindFirstFile(fullPath.c_str(), &findData);
 	if (INVALID_HANDLE_VALUE != hFind)
 	{
 		do
 		{
 			if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
-				files.push_back(findData.cFileName);
+				files.push_back(concat_path(basePath, findData.cFileName));
 		} while (FindNextFile(hFind, &findData) == TRUE);
 
 		FindClose(hFind);
@@ -344,47 +344,43 @@ std::vector<std::wstring> find_files(const std::wstring& path)
 	return files;
 }
 
+enum class ReturnCode
+{
+	Success = 0,
+	UnexpectedAmountOfMstFiles = 1,
+	UnexpectedAmountOfPayloadFiles = 2,
+	UnexpectedAmountOfCabFiles = 3
+};
+
 // Entry point.
 int wmain(int argc, wchar_t* argv[])
 {
-	const wchar_t* msiName = L"C:\\Temp\\sl5\\silverlight.msi";
-	const wchar_t* mspName = L"C:\\Temp\\sl5\\silverlight.msp";
-	const wchar_t* workDir = L"C:\\Temp\\sl5\\work";
+	const std::wstring msiName = L"C:\\Temp\\sl5\\silverlight.msi";
+	const std::wstring mspName = L"C:\\Temp\\sl5\\silverlight.msp";
+	const std::wstring targetPath = L"C:\\Temp\\sl5\\work\\ext";
+	const std::wstring workDir = L"C:\\Temp\\sl5\\work";
+
+	// TODO: Extract silverlight.7z
+
+	auto cabFiles = find_files(workDir, L"*.cab");
+	if (cabFiles.size() != 1)
+		return static_cast<int>(ReturnCode::UnexpectedAmountOfCabFiles);
 
 	extract_msp(mspName, workDir);
 
-	auto mstFiles = find_files(L"C:\\Temp\\sl5\\work\\*.mst");
-	for (auto f : mstFiles)
-	{
-		std::wcout << f << std::endl;
-	}
-
-	// TODO: Get MST filename(s) dynamically from workDir
-	const wchar_t* mstName = L"C:\\Temp\\sl5\\work\\oldTocurrent.mst";
-
+	auto mstFiles = find_files(workDir, L"oldToCurrent.mst");
+	if (mstFiles.size() != 1)
+		return static_cast<int>(ReturnCode::UnexpectedAmountOfMstFiles);
 
 	DbInfo dbInfo;
-	get_files_from_mst(msiName, mstName, dbInfo, mstFiles);
-
-	for (DirInfo& d : dbInfo.Directories)
-	{
-		std::wcout << d.Key << L"\t" << d.ParentKey << L"\t" << d.Name << std::endl;
-	}
-
-	for (FileInfo& f : dbInfo.Files)
-	{
-		std::wcout << f.Key << L"\t" << f.FileName << L"\t" << f.DirectoryKey << std::endl;
-	}
+	get_files_from_mst(msiName, mstFiles.front(), dbInfo);
+	if (dbInfo.Files.empty() || dbInfo.Directories.empty())
+		return static_cast<int>(ReturnCode::UnexpectedAmountOfPayloadFiles);
 
 	// TODO: Construct directory structure
 	// TODO: Construct full paths for files
 
-	
-	// TODO: Get CAB filename(s) dynamically from workDir
-	const wchar_t* cabName = L"C:\\Temp\\sl5\\work\\PCW_CAB_Silver.cab";
-	const wchar_t* targetPath = L"C:\\Temp\\sl5\\work\\ext";
+	extract_cab(cabFiles.front(), targetPath);
 
-	extract_cab(cabName, targetPath);
-
-	return 0;
+	return static_cast<int>(ReturnCode::Success);
 }
