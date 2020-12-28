@@ -1,6 +1,7 @@
 /* Silext - A Silverlight installer extractor - Copyright (c) 2020 Rxcle */
 
 #include <iostream>
+#include <sstream>
 #include <tchar.h>
 #include <crtdbg.h>
 #include <windows.h>
@@ -46,7 +47,6 @@ const CLSID CLSID_MsiTransform = { 0xC1082, 0x0, 0x0, {0xC0, 0x0, 0x0, 0x0, 0x0,
 
 struct DirInfo
 {
-	std::wstring Key;
 	std::wstring ParentKey;
 	std::wstring Name;
 	DirInfo* ParentDir;
@@ -54,15 +54,14 @@ struct DirInfo
 
 struct FileInfo
 {
-	std::wstring Key;
 	std::wstring FileName;
 	std::wstring DirectoryKey;
 };
 
 struct DbInfo
 {
-	std::vector<DirInfo> Directories;
-	std::vector<FileInfo> Files;
+	std::map<std::wstring, DirInfo> Directories;
+	std::map<std::wstring, FileInfo> Files;
 };
 
 bool make_path(LPTSTR pszDest, size_t cchDest, const std::wstring& pszDir, const std::wstring& pszName, const std::wstring& pszExt)
@@ -130,32 +129,30 @@ void execute_view(PMSIHANDLE& hDatabase, std::wstring query, std::function<void(
 				recordFunc(hRecord);
 }
 
-void get_directories(PMSIHANDLE& hDatabase, std::vector<DirInfo>& directories)
+void get_directories(PMSIHANDLE& hDatabase, std::map<std::wstring, DirInfo>& directories)
 {
 	execute_view(hDatabase,
 		L"SELECT Directory, Directory_Parent, DefaultDir FROM Directory",
 		[&directories](PMSIHANDLE& hRecord)
 	{
-		directories.push_back({
-			get_record_string(hRecord, 1),
+		directories[get_record_string(hRecord, 1)] = {
 			get_record_string(hRecord, 2),
 			get_record_string(hRecord, 3),
 			nullptr
-			});
+		};
 	});
 }
 
-void get_files(PMSIHANDLE& hDatabase, std::vector<FileInfo>& files)
+void get_files(PMSIHANDLE& hDatabase, std::map<std::wstring, FileInfo>& files)
 {
 	execute_view(hDatabase,
 		L"SELECT File, FileName, Directory_ FROM File, Component WHERE File.Component_ = Component.Component",
 		[&files](PMSIHANDLE& hRecord)
 	{
-		files.push_back({
-			get_record_string(hRecord, 1),
+		files[get_record_string(hRecord, 1)] = {
 			get_record_string(hRecord, 2),
 			get_record_string(hRecord, 3)
-			});
+		};
 	});
 }
 
@@ -303,24 +300,50 @@ void get_files_from_mst(const std::wstring& msiName, const std::wstring& mstFile
 	}
 }
 
-void extract_cab(const std::wstring& cabName, const std::wstring& targetPath)
+std::vector<std::wstring> split(const std::wstring& s, wchar_t seperator)
 {
+	std::vector<std::wstring> output;
+	std::wstring::size_type prev_pos = 0, pos = 0;
+	while ((pos = s.find(seperator, pos)) != std::wstring::npos)
+	{
+		auto substring(s.substr(prev_pos, pos - prev_pos));
+		output.push_back(substring);
+		prev_pos = ++pos;
+	}
+
+	output.push_back(s.substr(prev_pos, pos - prev_pos));
+	return output;
+}
+
+void extract_cab(const std::wstring& cabName, const std::wstring& targetPath, const DbInfo& dbInfo)
+{
+	auto context = std::pair<std::wstring, DbInfo>(targetPath, dbInfo);
 	SetupIterateCabinet(cabName.c_str(), 0,
-		[](PVOID context, UINT notification, UINT_PTR param1, UINT_PTR param2) -> UINT 
+		[](PVOID context, UINT notification, UINT_PTR param1, UINT_PTR param2) -> UINT
+	{
+		if (notification == SPFILENOTIFY_FILEINCABINET)
 		{
-			if (notification == SPFILENOTIFY_FILEINCABINET)
-			{
-				auto fileInCabinetInfo = (FILE_IN_CABINET_INFO*)param1;
+			auto fileInCabinetInfo = (FILE_IN_CABINET_INFO*)param1;
 
-				// TODO: Set full path based on Directories/Files extracted from MST
-				auto tpath = (std::wstring*)context;
-				PathCombine(fileInCabinetInfo->FullTargetName, tpath->c_str(), fileInCabinetInfo->NameInCabinet);
+			auto ccontext = static_cast<std::pair<std::wstring, DbInfo>*>(context);
+			DbInfo& dbInfo = ccontext->second;
 
-				return FILEOP_DOIT;
-			}
-			return NO_ERROR;
-		},
-		(void*)&targetPath);
+			auto fileInfoIt = dbInfo.Files.find(fileInCabinetInfo->NameInCabinet);
+			FileInfo& fileInfo = fileInfoIt->second;
+			auto fileNameParts = split(fileInfo.FileName, '|');
+			auto targetFileName = fileNameParts.back().c_str();
+
+			// TODO: Compile FULL path based on Directories & Create directory
+			auto dirInfoIt = dbInfo.Directories.find(fileInfo.DirectoryKey);
+			DirInfo& dirInfo = dirInfoIt->second;
+			auto dirNameParts = split(dirInfo.Name, '|');
+			auto targetDirName = dirNameParts.back().c_str();
+
+			PathCombine(fileInCabinetInfo->FullTargetName, ccontext->first.c_str(), targetFileName);
+			return FILEOP_DOIT;
+		}
+		return NO_ERROR;
+	}, static_cast<void*>(&context));
 }
 
 std::wstring concat_path(const std::wstring& firstPath, const std::wstring& secondPath)
@@ -349,19 +372,6 @@ std::vector<std::wstring> find_files(const std::wstring& basePath, const std::ws
 		FindClose(hFind);
 	}
 	return files;
-}
-
-void build_directory_paths(std::vector<DirInfo>& directories)
-{
-	for (auto& dir : directories)
-	{
-		for (auto& parDir : directories)
-			if (parDir.Key.compare(dir.Key) == 0)
-			{
-				dir.ParentDir = &parDir;
-				break;
-			}
-	}
 }
 
 enum class ReturnCode
@@ -417,12 +427,12 @@ int wmain(int argc, wchar_t* argv[])
 	if (dbInfo.Files.empty() || dbInfo.Directories.empty())
 		return static_cast<int>(ReturnCode::UnexpectedAmountOfPayloadFiles);
 
-	build_directory_paths(dbInfo.Directories);
+	//build_directory_paths(dbInfo.Directories);
 
 	// TODO: Construct directory structure
 	// TODO: Construct full paths for files
 
-	extract_cab(cabFiles.front(), targetPath);
+	extract_cab(cabFiles.front(), targetPath, dbInfo);
 
 	return static_cast<int>(ReturnCode::Success);
 }
