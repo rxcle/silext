@@ -28,6 +28,7 @@
     <None Include="7z.dll" />
   </ItemGroup>
   <ItemGroup>
-    <Text Include="7Zip-License.txt" />
+    <Text Include="7z_License.txt" />
+    <Text Include="Silext_Readme.txt" />
   </ItemGroup>
 </Project>
