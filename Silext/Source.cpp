@@ -1,4 +1,9 @@
-/* Silext - A Silverlight installer extractor - Copyright (c) 2020 Rxcle */
+/* Silext - A Silverlight installer extractor - Copyright (c) 2020 Rxcle 
+*
+* Usage: Silext <Silverlight_x64.exe> <target_path>
+* Result: >= 0 Success
+*          < 0 Failure
+*/
 
 #include <iostream>
 #include <sstream>
@@ -20,6 +25,8 @@
 #pragma comment(lib, "msi.lib")
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "Shlwapi.lib")
+
+namespace fs = std::filesystem;
 
 /*
 STEPS:
@@ -181,7 +188,6 @@ unsigned int save_stream(MSIHANDLE hRecord, const std::wstring& directory)
 						if (make_path(szPath, MAX_PATH, directory.c_str(), streamName.c_str(), L".cab"))
 						{
 							// Create the local file in which data is written.
-							_tprintf(TEXT("%s\n"), szPath);
 							file.open(szPath, std::ios_base::binary);
 						}
 					}
@@ -231,8 +237,6 @@ HRESULT save_storage(IStorage* const pRootStorage, const std::wstring& pszDir, c
 		}
 		else
 		{
-			_tprintf(TEXT("%s\n"), szPath);
-
 			// Create the storage file.
 			hr = StgCreateDocfile(
 				szPath,
@@ -344,10 +348,10 @@ std::wstring combine_directory_parts(const std::vector<std::wstring>& parts)
 	return ss.str();
 }
 
-void extract_cab(const std::wstring& cabName, const std::wstring& targetPath, const DbInfo& dbInfo)
+bool extract_cab(const std::wstring& cabName, const std::wstring& targetPath, const DbInfo& dbInfo)
 {
 	auto context = std::pair<std::wstring, DbInfo>(targetPath, dbInfo);
-	SetupIterateCabinet(cabName.c_str(), 0,
+	return SetupIterateCabinet(cabName.c_str(), 0,
 		[](PVOID context, UINT notification, UINT_PTR param1, UINT_PTR param2) -> UINT
 	{
 		if (notification == SPFILENOTIFY_FILEINCABINET)
@@ -367,7 +371,10 @@ void extract_cab(const std::wstring& cabName, const std::wstring& targetPath, co
 			get_directory_parts(dbInfo.Directories, fileInfo.DirectoryKey, dirParts);
 			auto dirPath = combine_directory_parts(dirParts);
 
-			std::filesystem::create_directories(dirPath);
+			std::error_code errorCode;
+			std::filesystem::create_directories(dirPath, errorCode);
+			if (errorCode)
+				return FILEOP_ABORT;
 
 			PathCombine(fileInCabinetInfo->FullTargetName, dirPath.c_str(), targetFileName);
 			return FILEOP_DOIT;
@@ -404,63 +411,101 @@ std::vector<std::wstring> find_files(const std::wstring& basePath, const std::ws
 	return files;
 }
 
+bool cleanup_workdir(const std::wstring& workdir)
+{
+	auto tempFiles = find_files(workdir, L"*");
+	std::error_code errorCode;
+	for (auto& tempFile : tempFiles)
+	{
+		fs::permissions(tempFile,
+			fs::perms::owner_write,
+			fs::perm_options::add, errorCode);
+		fs::remove(tempFile, errorCode);
+	}
+	if (!errorCode)
+		fs::remove(workdir, errorCode);
+	return !errorCode;
+}
+
 enum class ReturnCode
 {
 	Success = 0,
-	InvalidArguments = 1,
-	UnexpectedAmountOfMsiFiles = 2,
-	UnexpectedAmountOf7zFiles = 3,
-	UnexpectedAmountOfMspFiles = 4,
-	UnexpectedAmountOfMstFiles = 5,
-	UnexpectedAmountOfPayloadFiles = 6,
-	UnexpectedAmountOfCabFiles = 7
+	SuccessNoCleanup = 1,
+
+	CannotInitializeWorkDir = -1,
+	InvalidArguments = -2,
+	UnexpectedAmountOfMsiFiles = -3,
+	UnexpectedAmountOf7zFiles = -4,
+	UnexpectedAmountOfMspFiles = -5,
+	UnexpectedAmountOfMstFiles = -6,
+	UnexpectedAmountOfPayloadFiles = -7,
+	UnexpectedAmountOfCabFiles = -8,
+	ErrorExtractingCab = -9
 };
 
-// Entry point.
-int wmain(int argc, wchar_t* argv[])
+ReturnCode extract_setup(const std::wstring& setupExeName, const std::wstring& targetPath, const std::wstring& workDir)
 {
-	const std::wstring setupExeName = L"C:\\Temp\\sl5\\Silverlight_x64.exe";
-	const std::wstring targetPath = L"C:\\Temp\\sl5\\work\\ext";
-	const std::wstring workDir = L"C:\\Temp\\sl5\\work";
-
 	bit7z::Bit7zLibrary blib;
 	bit7z::BitExtractor cextractor(blib, bit7z::BitFormat::Cab);
 	cextractor.extract(setupExeName, workDir);
 
 	auto msiFiles = find_files(workDir, L"*.msi");
 	if (msiFiles.size() != 1)
-		return static_cast<int>(ReturnCode::UnexpectedAmountOfMsiFiles);
+		return ReturnCode::UnexpectedAmountOfMsiFiles;
 
 	auto sevenZipFiles = find_files(workDir, L"*.7z");
 	if (sevenZipFiles.size() != 1)
-		return static_cast<int>(ReturnCode::UnexpectedAmountOf7zFiles);
+		return ReturnCode::UnexpectedAmountOf7zFiles;
 
 	bit7z::BitExtractor extractor(blib, bit7z::BitFormat::SevenZip);
 	extractor.extract(sevenZipFiles.front(), workDir);
 
 	auto mspFiles = find_files(workDir, L"*.msp");
 	if (mspFiles.size() != 1)
-		return static_cast<int>(ReturnCode::UnexpectedAmountOfMspFiles);
+		return ReturnCode::UnexpectedAmountOfMspFiles;
 
 	extract_msp(mspFiles.front(), workDir);
 
 	auto cabFiles = find_files(workDir, L"*.cab");
 	if (cabFiles.size() != 1)
-		return static_cast<int>(ReturnCode::UnexpectedAmountOfCabFiles);
+		return ReturnCode::UnexpectedAmountOfCabFiles;
 
 	auto mstFiles = find_files(workDir, L"oldToCurrent.mst");
 	if (mstFiles.size() != 1)
-		return static_cast<int>(ReturnCode::UnexpectedAmountOfMstFiles);
+		return ReturnCode::UnexpectedAmountOfMstFiles;
 
 	DbInfo dbInfo;
 	get_files_from_mst(msiFiles.front(), mstFiles.front(), dbInfo);
 	if (dbInfo.Files.empty() || dbInfo.Directories.empty())
-		return static_cast<int>(ReturnCode::UnexpectedAmountOfPayloadFiles);
+		return ReturnCode::UnexpectedAmountOfPayloadFiles;
 
-	// TODO: Construct directory structure
-	// TODO: Construct full paths for files
+	if (!extract_cab(cabFiles.front(), targetPath, dbInfo))
+		return ReturnCode::ErrorExtractingCab;
 
-	extract_cab(cabFiles.front(), targetPath, dbInfo);
+	return ReturnCode::Success;
+}
 
-	return static_cast<int>(ReturnCode::Success);
+int wmain(int argc, wchar_t* argv[])
+{
+	if (argc != 3)
+		return static_cast<int>(ReturnCode::InvalidArguments);
+
+	const std::wstring setupExeName = argv[1];
+	const std::wstring targetPath = argv[2];
+
+	std::error_code errorCode;
+	const std::wstring workDir = concat_path(fs::temp_directory_path(errorCode), L"rxcle-silext");
+	if (!errorCode)
+		fs::create_directories(workDir, errorCode);
+	if (errorCode)
+		return static_cast<int>(ReturnCode::CannotInitializeWorkDir);
+
+	auto extractResult = extract_setup(setupExeName, targetPath, workDir);
+
+	bool cleanedUp = cleanup_workdir(workDir);
+
+	return static_cast<int>(
+		extractResult == ReturnCode::Success && !cleanedUp 
+		? ReturnCode::SuccessNoCleanup 
+		: extractResult);
 }
