@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <map>
 #include <bitextractor.hpp>
+#include <filesystem>
 
 #pragma comment(lib, "msi.lib")
 #pragma comment(lib, "setupapi.lib")
@@ -315,6 +316,34 @@ std::vector<std::wstring> split(const std::wstring& s, wchar_t seperator)
 	return output;
 }
 
+void get_directory_parts(const std::map<std::wstring, DirInfo>& directories, const std::wstring& key, std::vector<std::wstring>& parts_out)
+{
+	auto dirInfoIt = directories.find(key);
+	if (dirInfoIt == directories.end()) 
+	{
+		//handle the error
+	}
+	else 
+	{
+		auto& dirInfo = dirInfoIt->second;
+		auto dirNameParts = split(dirInfo.Name, '|');
+		auto targetDirName = dirNameParts.back().c_str();
+		if (!dirInfo.ParentKey.empty())
+			get_directory_parts(directories, dirInfo.ParentKey, parts_out);
+		parts_out.push_back(targetDirName);
+	}
+}
+
+std::wstring combine_directory_parts(const std::vector<std::wstring>& parts)
+{
+	std::wstringstream ss;
+	std::for_each(parts.begin(), parts.end(), [&ss](const std::wstring& s) 
+	{ 
+		ss << s << L"\\";
+	});
+	return ss.str();
+}
+
 void extract_cab(const std::wstring& cabName, const std::wstring& targetPath, const DbInfo& dbInfo)
 {
 	auto context = std::pair<std::wstring, DbInfo>(targetPath, dbInfo);
@@ -333,13 +362,14 @@ void extract_cab(const std::wstring& cabName, const std::wstring& targetPath, co
 			auto fileNameParts = split(fileInfo.FileName, '|');
 			auto targetFileName = fileNameParts.back().c_str();
 
-			// TODO: Compile FULL path based on Directories & Create directory
-			auto dirInfoIt = dbInfo.Directories.find(fileInfo.DirectoryKey);
-			DirInfo& dirInfo = dirInfoIt->second;
-			auto dirNameParts = split(dirInfo.Name, '|');
-			auto targetDirName = dirNameParts.back().c_str();
+			std::vector<std::wstring> dirParts;
+			dirParts.push_back(ccontext->first);
+			get_directory_parts(dbInfo.Directories, fileInfo.DirectoryKey, dirParts);
+			auto dirPath = combine_directory_parts(dirParts);
 
-			PathCombine(fileInCabinetInfo->FullTargetName, ccontext->first.c_str(), targetFileName);
+			std::filesystem::create_directories(dirPath);
+
+			PathCombine(fileInCabinetInfo->FullTargetName, dirPath.c_str(), targetFileName);
 			return FILEOP_DOIT;
 		}
 		return NO_ERROR;
@@ -426,8 +456,6 @@ int wmain(int argc, wchar_t* argv[])
 	get_files_from_mst(msiFiles.front(), mstFiles.front(), dbInfo);
 	if (dbInfo.Files.empty() || dbInfo.Directories.empty())
 		return static_cast<int>(ReturnCode::UnexpectedAmountOfPayloadFiles);
-
-	//build_directory_paths(dbInfo.Directories);
 
 	// TODO: Construct directory structure
 	// TODO: Construct full paths for files
