@@ -103,7 +103,9 @@
     <Text Include="7z_License.txt">
       <DeploymentContent>true</DeploymentContent>
     </Text>
-    <Text Include="Silext_Readme.txt" />
+    <Text Include="Silext_Readme.txt">
+      <DeploymentContent>true</DeploymentContent>
+    </Text>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
