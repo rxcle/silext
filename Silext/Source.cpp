@@ -1,8 +1,12 @@
 /* Silext - A Silverlight installer extractor - Copyright (c) 2020 Rxcle 
 *
-* Usage: Silext <Silverlight_x64.exe> <target_path>
-* Result: >= 0 Success
-*          < 0 Failure
+* Usage: Silext <Silverlight_x64.exe> <target_path> [<options>]
+* 
+* Options: "s" Only extract 64-bit program files (otherwise extract everything)
+* 
+* Returns:  0 Success
+*          >0 Success with warning (e.g. no cleanup)
+*          <0 Fatal error
 */
 
 #include <iostream>
@@ -57,7 +61,6 @@ struct DirInfo
 {
 	std::wstring ParentKey;
 	std::wstring Name;
-	DirInfo* ParentDir;
 };
 
 struct FileInfo
@@ -145,8 +148,7 @@ void get_directories(PMSIHANDLE& hDatabase, std::map<std::wstring, DirInfo>& dir
 	{
 		directories[get_record_string(hRecord, 1)] = {
 			get_record_string(hRecord, 2),
-			get_record_string(hRecord, 3),
-			nullptr
+			get_record_string(hRecord, 3)
 		};
 	});
 }
@@ -348,27 +350,56 @@ std::wstring combine_directory_parts(const std::vector<std::wstring>& parts)
 	return ss.str();
 }
 
-bool extract_cab(const std::wstring& cabName, const std::wstring& targetPath, const DbInfo& dbInfo)
+struct ExtractOptions
 {
-	auto context = std::pair<std::wstring, DbInfo>(targetPath, dbInfo);
+	const bool sixtyFourBitOnly;
+};
+
+struct CabExtractContext
+{
+	const std::wstring& targetPath;
+	const DbInfo& dbInfo;
+	const ExtractOptions& extractOptions;
+};
+
+const std::wstring SourceDirPathPart = L"SourceDir";
+const std::wstring PFiles64PathPart = L"PFiles_64";
+
+bool extract_cab(const std::wstring& cabName, const std::wstring& targetPath, const DbInfo& dbInfo, const ExtractOptions& extractOptions)
+{
+
+	auto context = CabExtractContext{ targetPath, dbInfo, extractOptions };
 	return SetupIterateCabinet(cabName.c_str(), 0,
 		[](PVOID context, UINT notification, UINT_PTR param1, UINT_PTR param2) -> UINT
 	{
 		if (notification == SPFILENOTIFY_FILEINCABINET)
 		{
-			auto fileInCabinetInfo = (FILE_IN_CABINET_INFO*)param1;
+			auto fileInCabinetInfo = reinterpret_cast<FILE_IN_CABINET_INFO*>(param1);
+			auto ccontext = static_cast<CabExtractContext*>(context);
 
-			auto ccontext = static_cast<std::pair<std::wstring, DbInfo>*>(context);
-			DbInfo& dbInfo = ccontext->second;
-
-			auto fileInfoIt = dbInfo.Files.find(fileInCabinetInfo->NameInCabinet);
-			FileInfo& fileInfo = fileInfoIt->second;
+			auto fileInfoIt = ccontext->dbInfo.Files.find(fileInCabinetInfo->NameInCabinet);
+			const FileInfo& fileInfo = fileInfoIt->second;
 			auto fileNameParts = split(fileInfo.FileName, '|');
 			auto targetFileName = fileNameParts.back().c_str();
 
 			std::vector<std::wstring> dirParts;
-			dirParts.push_back(ccontext->first);
-			get_directory_parts(dbInfo.Directories, fileInfo.DirectoryKey, dirParts);
+			get_directory_parts(ccontext->dbInfo.Directories, fileInfo.DirectoryKey, dirParts);
+			if (dirParts[0] == SourceDirPathPart)
+				dirParts.erase(dirParts.begin());
+
+			if (ccontext->extractOptions.sixtyFourBitOnly)
+			{
+				if (dirParts[0] == PFiles64PathPart)
+				{
+					dirParts.erase(dirParts.begin());
+				} 
+				else
+				{
+					return FILEOP_SKIP;
+				}
+			}
+
+			dirParts.insert(dirParts.begin(), ccontext->targetPath);
 			auto dirPath = combine_directory_parts(dirParts);
 
 			std::error_code errorCode;
@@ -443,7 +474,7 @@ enum class ReturnCode
 	ErrorExtractingCab = -9
 };
 
-ReturnCode extract_setup(const std::wstring& setupExeName, const std::wstring& targetPath, const std::wstring& workDir)
+ReturnCode extract_setup(const std::wstring& setupExeName, const std::wstring& targetPath, const std::wstring& workDir, const ExtractOptions& extractOptions)
 {
 	bit7z::Bit7zLibrary blib;
 	bit7z::BitExtractor cextractor(blib, bit7z::BitFormat::Cab);
@@ -479,7 +510,7 @@ ReturnCode extract_setup(const std::wstring& setupExeName, const std::wstring& t
 	if (dbInfo.Files.empty() || dbInfo.Directories.empty())
 		return ReturnCode::UnexpectedAmountOfPayloadFiles;
 
-	if (!extract_cab(cabFiles.front(), targetPath, dbInfo))
+	if (!extract_cab(cabFiles.front(), targetPath, dbInfo, extractOptions))
 		return ReturnCode::ErrorExtractingCab;
 
 	return ReturnCode::Success;
@@ -487,11 +518,16 @@ ReturnCode extract_setup(const std::wstring& setupExeName, const std::wstring& t
 
 int wmain(int argc, wchar_t* argv[])
 {
-	if (argc != 3)
+	if (argc < 3 || argc > 4)
 		return static_cast<int>(ReturnCode::InvalidArguments);
 
 	const std::wstring setupExeName = argv[1];
 	const std::wstring targetPath = argv[2];
+	const std::wstring options = argc == 4 ? std::wstring(argv[3]) : std::wstring();
+
+	ExtractOptions extractOptions = {
+		options.find('s') != std::string::npos
+	};
 
 	std::error_code errorCode;
 	const std::wstring workDir = concat_path(fs::temp_directory_path(errorCode), L"rxcle-silext");
@@ -500,7 +536,7 @@ int wmain(int argc, wchar_t* argv[])
 	if (errorCode)
 		return static_cast<int>(ReturnCode::CannotInitializeWorkDir);
 
-	auto extractResult = extract_setup(setupExeName, targetPath, workDir);
+	auto extractResult = extract_setup(setupExeName, targetPath, workDir, extractOptions);
 
 	bool cleanedUp = cleanup_workdir(workDir);
 

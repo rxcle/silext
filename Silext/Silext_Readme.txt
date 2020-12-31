@@ -3,7 +3,9 @@ Silext
 
 Microsoft Silverlight 5 installer extractor (x64 Windows only)
 
-Usage: Silext <Silverlight_x64.exe> <target_path>
+Usage: Silext <Silverlight_x64.exe> <target_path> [<options>]
+
+Options: "s" Only extract 64-bit program files (otherwise extract everything)
 
 Returns:  0 Success
          >0 Success with warning (e.g. no cleanup)
